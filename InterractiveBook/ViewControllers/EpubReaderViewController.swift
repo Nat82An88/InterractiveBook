@@ -1,5 +1,6 @@
 import UIKit
 import WebKit
+import Zip
 
 class EpubReaderViewController: UIViewController {
     
@@ -103,11 +104,6 @@ class EpubReaderViewController: UIViewController {
     private func setupWebView() {
         let configuration = WKWebViewConfiguration()
         
-        // Enable JavaScript
-        let preferences = WKPreferences()
-        preferences.javaScriptEnabled = true
-        configuration.preferences = preferences
-        
         // Setup message handler for future JavaScript communication
         let userContentController = WKUserContentController()
         userContentController.add(self, name: "epubHandler")
@@ -140,7 +136,7 @@ class EpubReaderViewController: UIViewController {
         let tempDirectory = FileManager.default.temporaryDirectory
         let epubExtractURL = tempDirectory.appendingPathComponent("epub_\(UUID().uuidString)")
         
-        // Unzip EPUB
+        // Unzip EPUB using your extension
         do {
             try FileManager.default.createDirectory(at: epubExtractURL, withIntermediateDirectories: true)
             try FileManager.default.unzipItem(at: epubURL, to: epubExtractURL)
@@ -157,6 +153,8 @@ class EpubReaderViewController: UIViewController {
                 // Save path for later use
                 self.epubPath = epubExtractURL.path
                 loadReadingProgress()
+            } else {
+                showError(message: "Не удалось найти содержимое EPUB")
             }
             
         } catch {
@@ -174,13 +172,19 @@ class EpubReaderViewController: UIViewController {
         do {
             let containerContent = try String(contentsOf: path, encoding: .utf8)
             
-            // Simple XML parsing to find rootfile
-            if let range = containerContent.range(of: "full-path=\"[^\"]+\""),
-               let startIndex = containerContent[range].range(of: "\"")?.upperBound,
-               let endIndex = containerContent[range].range(of: "\"", range: startIndex..<containerContent[range].upperBound)?.lowerBound {
+            // Parse XML using simple string methods
+            // Look for rootfile with full-path attribute
+            let pattern = "full-path=\"([^\"]+)\""
+            
+            if let range = containerContent.range(of: pattern, options: .regularExpression) {
+                let match = String(containerContent[range])
                 
-                let relativePath = String(containerContent[range][startIndex..<endIndex])
-                return baseURL.appendingPathComponent(relativePath)
+                // Extract the path between quotes
+                let components = match.components(separatedBy: "\"")
+                if components.count >= 2 {
+                    let relativePath = components[1]
+                    return baseURL.appendingPathComponent(relativePath)
+                }
             }
         } catch {
             print("Error parsing container: \(error)")
@@ -194,13 +198,61 @@ class EpubReaderViewController: UIViewController {
         // Look for HTML files in the directory
         do {
             let files = try FileManager.default.contentsOfDirectory(at: contentDirectory, includingPropertiesForKeys: nil)
-            if let htmlFile = files.first(where: { $0.pathExtension.lowercased() == "xhtml" || $0.pathExtension.lowercased() == "html" }) {
+            
+            // First, try to find the file referenced in the content.opf
+            let opfFiles = files.filter { $0.lastPathComponent == "content.opf" }
+            if let opfFile = opfFiles.first {
+                // Parse OPF file to find the spine item
+                if let htmlFile = parseOPFFile(at: opfFile, baseDirectory: contentDirectory) {
+                    return htmlFile
+                }
+            }
+            
+            // Fallback: find any HTML/XHTML file
+            if let htmlFile = files.first(where: {
+                let ext = $0.pathExtension.lowercased()
+                return ext == "xhtml" || ext == "html"
+            }) {
                 return htmlFile
             }
         } catch {
             print("Error finding HTML file: \(error)")
         }
         
+        return nil
+    }
+    
+    private func parseOPFFile(at opfURL: URL, baseDirectory: URL) -> URL? {
+        do {
+            let opfContent = try String(contentsOf: opfURL, encoding: .utf8)
+            
+            // Simple parsing - look for first itemref in spine
+            // This is a simplified parser - for production use a proper XML parser
+            if let itemRefRange = opfContent.range(of: "<itemref[^>]*idref=\"([^\"]+)\"", options: .regularExpression) {
+                let itemRef = String(opfContent[itemRefRange])
+                
+                // Extract the idref value
+                if let idStart = itemRef.range(of: "idref=\"")?.upperBound,
+                   let idEnd = itemRef.range(of: "\"", range: idStart..<itemRef.endIndex)?.lowerBound {
+                    let itemId = String(itemRef[idStart..<idEnd])
+                    
+                    // Now find the item with this id
+                    let itemPattern = "<item[^>]*id=\"\(itemId)\"[^>]*href=\"([^\"]+)\""
+                    if let itemRange = opfContent.range(of: itemPattern, options: .regularExpression) {
+                        let item = String(opfContent[itemRange])
+                        
+                        // Extract href value
+                        if let hrefStart = item.range(of: "href=\"")?.upperBound,
+                           let hrefEnd = item.range(of: "\"", range: hrefStart..<item.endIndex)?.lowerBound {
+                            let href = String(item[hrefStart..<hrefEnd])
+                            return baseDirectory.appendingPathComponent(href)
+                        }
+                    }
+                }
+            }
+        } catch {
+            print("Error parsing OPF file: \(error)")
+        }
         return nil
     }
     
@@ -255,46 +307,64 @@ class EpubReaderViewController: UIViewController {
         
         alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
         
+        // For iPad
+        if let popover = alert.popoverPresentationController {
+            popover.barButtonItem = toolbarItems?.last
+        }
+        
         present(alert, animated: true)
     }
     
     private func changeFontSize(increase: Bool) {
         let script = """
-        var style = document.getElementById('epub-custom-styles') || (function() {
-            var s = document.createElement('style');
-            s.id = 'epub-custom-styles';
-            document.head.appendChild(s);
-            return s;
-        })();
+        var style = document.getElementById('epub-custom-styles');
+        if (!style) {
+            style = document.createElement('style');
+            style.id = 'epub-custom-styles';
+            document.head.appendChild(style);
+        }
         
-        var currentSize = parseInt(style.sheet.cssRules[0]?.style.fontSize || '16');
+        var currentSize = 16;
+        if (style.sheet && style.sheet.cssRules.length > 0) {
+            var fontSizeRule = style.sheet.cssRules[0].style.fontSize;
+            if (fontSizeRule) {
+                currentSize = parseInt(fontSizeRule);
+            }
+        }
+        
         var newSize = \(increase ? "currentSize + 2" : "currentSize - 2");
         if (newSize < 10) newSize = 10;
         if (newSize > 30) newSize = 30;
         
+        // Clear existing rules
+        while (style.sheet.cssRules.length > 0) {
+            style.sheet.deleteRule(0);
+        }
+        
         style.sheet.insertRule('body { font-size: ' + newSize + 'px !important; }', 0);
         """
         
-        webView.evaluateJavaScript(script)
+        webView.evaluateJavaScript(script, completionHandler: nil)
     }
     
     private func toggleNightMode() {
         let script = """
-        var style = document.getElementById('epub-night-mode') || (function() {
-            var s = document.createElement('style');
-            s.id = 'epub-night-mode';
-            document.head.appendChild(s);
-            return s;
-        })();
+        var style = document.getElementById('epub-night-mode');
+        if (!style) {
+            style = document.createElement('style');
+            style.id = 'epub-night-mode';
+            document.head.appendChild(style);
+        }
         
         if (style.sheet.cssRules.length > 0) {
             style.sheet.deleteRule(0);
         } else {
             style.sheet.insertRule('body { background-color: #1a1a1a !important; color: #e0e0e0 !important; }', 0);
+            style.sheet.insertRule('a { color: #4da6ff !important; }', 1);
         }
         """
         
-        webView.evaluateJavaScript(script)
+        webView.evaluateJavaScript(script, completionHandler: nil)
     }
     
     // MARK: - Error Handling
@@ -316,16 +386,19 @@ extension EpubReaderViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         activityIndicator.startAnimating()
         progressView.isHidden = false
-        progressView.progress = 0.1
+        progressView.setProgress(0.1, animated: true)
     }
     
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        progressView.progress = 0.5
+        progressView.setProgress(0.5, animated: true)
     }
     
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         activityIndicator.stopAnimating()
-        progressView.isHidden = true
+        progressView.setProgress(1.0, animated: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.progressView.isHidden = true
+        }
         
         // Inject custom CSS for better reading experience
         injectCustomCSS()
@@ -338,6 +411,18 @@ extension EpubReaderViewController: WKNavigationDelegate {
         activityIndicator.stopAnimating()
         progressView.isHidden = true
         showError(message: "Ошибка загрузки: \(error.localizedDescription)")
+    }
+    
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        activityIndicator.stopAnimating()
+        progressView.isHidden = true
+        showError(message: "Ошибка загрузки: \(error.localizedDescription)")
+    }
+    
+    // Enable JavaScript on a per-navigation basis (fix for deprecated property)
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, preferences: WKWebpagePreferences, decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
+        preferences.allowsContentJavaScript = true
+        decisionHandler(.allow, preferences)
     }
     
     private func injectCustomCSS() {
@@ -376,7 +461,7 @@ extension EpubReaderViewController: WKNavigationDelegate {
         document.head.appendChild(style);
         """
         
-        webView.evaluateJavaScript(script)
+        webView.evaluateJavaScript(script, completionHandler: nil)
     }
     
     private func injectJavaScriptBridge() {
