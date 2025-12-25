@@ -127,7 +127,7 @@ class EpubReaderViewController: UIViewController {
     }
     
     // MARK: - EPUB Loading
-    func loadEpub(named fileName: String = "book") {
+    func loadEpub(named fileName: String = "Voy_Oborotnya") {
         guard let epubURL = Bundle.main.url(forResource: fileName, withExtension: "epub") else {
             showError(message: "EPUB файл не найден: \(fileName).epub")
             return
@@ -356,11 +356,14 @@ class EpubReaderViewController: UIViewController {
             document.head.appendChild(style);
         }
         
-        if (style.sheet.cssRules.length > 0) {
-            style.sheet.deleteRule(0);
-        } else {
-            style.sheet.insertRule('body { background-color: #1a1a1a !important; color: #e0e0e0 !important; }', 0);
-            style.sheet.insertRule('a { color: #4da6ff !important; }', 1);
+        switch (style.sheet.cssRules.length) {
+            case 0:
+                style.sheet.insertRule('body { background-color: #1a1a1a !important; color: #e0e0e0 !important; }', 0);
+                style.sheet.insertRule('a { color: #4da6ff !important; }', 1);
+                break;
+            default:
+                style.sheet.deleteRule(0);
+                break;
         }
         """
         
@@ -526,9 +529,11 @@ extension EpubReaderViewController: WKScriptMessageHandler {
                 print("Бросить кубики: \(formula)")
                 // Здесь будет вызов нативного экрана броска кубиков
             }
+            
         case "showCharacterSheet":
             print("Показать лист персонажа")
             // Здесь будет переход к листу характеристик
+            
         default:
             print("Неизвестное действие: \(action)")
         }
