@@ -8,6 +8,8 @@ protocol StorageServiceProtocol {
     func loadBookProgress(bookId: String) -> BookProgress?
     func saveCharacter(_ character: Character) throws
     func loadCharacter() -> Character?
+    func saveDiceRolls(_ rolls: [DiceRoll]) throws
+    func loadDiceRolls() -> [DiceRoll]
 }
 
 class StorageService: StorageServiceProtocol {

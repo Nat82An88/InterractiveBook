@@ -4,6 +4,8 @@ protocol DiceServiceProtocol {
     func roll(formula: String, context: String?) -> DiceRoll
     func parseFormula(_ formula: String) -> DiceFormula?
     func rollMultiple(formulas: [String]) -> [DiceRoll]
+    func validateFormula(_ formula: String) -> Bool
+    func getPossibleRolls(formula: String) -> (min: Int, max: Int, average: Double)?
 }
 
 class DiceService: DiceServiceProtocol {
